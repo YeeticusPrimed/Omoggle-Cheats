@@ -6,7 +6,7 @@ A Tampermonkey userscript that lets you set your own score on [Omoggle](https://
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) for your browser
 2. Click **Create a new script**
-3. Paste the contents of `score-changer.js` and save
+3. Paste the contents of `userscript.js` and save
 4. Navigate to Omoggle — the UI will appear automatically
 
 ## Usage
