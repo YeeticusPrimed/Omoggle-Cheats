@@ -1,4 +1,4 @@
-# Omoggle Cheats
+# Omoggle Score Changer
 
 A Tampermonkey userscript that lets you set your own score on [Omoggle](https://omoggle.com).
 
@@ -11,19 +11,25 @@ A Tampermonkey userscript that lets you set your own score on [Omoggle](https://
 
 ## Usage
 
-The panel has two independent sliders:
+The panel has three sections:
 
-**Final Score** (green)
+### My Score (green)
+- Controls your local score display during the match
 - Controls the score submitted to the server at match finalization
 - This is what determines win/loss and ELO change
 - Use preset buttons or drag the slider
 
-**What Opponent Sees** (orange)
+### What Opponent Sees (orange)
 - Controls the live score broadcast to your opponent during the match
 - Updates in real time every frame via LiveKit
 - Can be set independently from your final score
 
-Both show **ACTIVE ✓** immediately on page load — no waiting required.
+### Fluctuation (orange slider, below opponent section)
+- Adds random noise to the score your opponent sees each frame
+- Range is `±value` around the base opponent score
+- Example: base `7.0` with fluctuation `1.0` means opponent sees between `6.0` and `8.0` each frame, chosen randomly
+- Set to `0` for a completely steady score
+- Max fluctuation is `±3.0`
 
 Drag the panel anywhere by clicking and holding the header.
 
@@ -38,20 +44,21 @@ Drag the panel anywhere by clicking and holding the header.
 
 ## How It Works
 
-The script uses two intercept strategies that activate before any page code runs:
+The script uses multiple intercept strategies that activate before any page code runs:
 
-**Final Score** — patches `JSON.stringify` at the document level. Every time the site serializes the match finalization payload (containing `selfScore` and `opponentScore`) the value is replaced with your chosen score before it reaches the server at `/api/match/finalize`.
+**My Score / Final Score** — patches `JSON.stringify` at the document level. Every time the site serializes the match finalization payload the `selfScore` field is replaced with your chosen value before it reaches the server at `/api/match/finalize`. Also patches the Zustand store's `setState` and the webpack scoring functions (`VA`, `cv`, `cM`) so the local display matches. A MutationObserver fallback keeps the on-screen number locked as a last resort.
 
-**Live Score** — patches `TextEncoder.prototype.encode` at the document level. Every LiveKit `publishData` call encodes its payload through `TextEncoder` first, so any `SCAN_STATE` message broadcast to your opponent is intercepted and rewritten with your chosen value before it leaves your browser.
+**What Opponent Sees** — patches `TextEncoder.prototype.encode` at the document level. Every LiveKit `publishData` call encodes its payload through `TextEncoder` first, so any `SCAN_STATE` message broadcast to your opponent is intercepted and rewritten with your chosen value before it leaves your browser. If fluctuation is set above `0`, random noise is added to each frame independently.
 
-Additionally a background async scan patches the webpack scoring module (`VA`, `cv`, `cM`) for extra coverage, without freezing the page.
+A background async scan also patches the webpack scoring module without freezing the page, scanning in batches of 500 modules at a time.
 
 ## Notes
 
-- Both hooks activate instantly on page load — no scanning delay
-- Final Score and Live Score can be set to different values
+- Both hooks activate instantly on page load
+- My Score and What Opponent Sees can be set to different values
+- Fluctuation only affects what the opponent sees, not your final score
 - Set your scores before entering a match
-- Works across deploys since it does not rely on hardcoded webpack module IDs for the critical intercepts
+- Works across deploys since critical intercepts do not rely on hardcoded webpack module IDs
 
 ## Compatibility
 
