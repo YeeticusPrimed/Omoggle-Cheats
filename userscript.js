@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Omoggle Set Score
 // @namespace    http://tampermonkey.net/
-// @version      1
+// @version      4
 // @description  Set your score!
 // @author       ConMan
 // @match        *://*.omoggle.com/*
@@ -17,7 +17,50 @@
     script.textContent = `
       (function() {
         window.__mogTargetScore = 9.8;
+        window.__mogOpponentTargetScore = 9.8;
 
+        // Patch JSON.stringify early
+        const origStringify = JSON.stringify;
+        JSON.stringify = function(value, ...args) {
+          if (value && typeof value === 'object' && 'selfScore' in value && 'opponentScore' in value) {
+            console.log('[Score Hook] Intercepted finalize payload');
+            value = { ...value, selfScore: window.__mogTargetScore ?? 9.8 };
+          }
+          return origStringify.call(this, value, ...args);
+        };
+
+        // Patch TextEncoder early for live SCAN_STATE
+        const origEncode = TextEncoder.prototype.encode;
+        TextEncoder.prototype.encode = function(str) {
+          if (typeof str === 'string' && str.includes('SCAN_STATE')) {
+            try {
+              const parsed = JSON.parse(str);
+              if (parsed.type === 'SCAN_STATE' && parsed.payload) {
+                const s = window.__mogOpponentTargetScore ?? 9.8;
+                parsed.payload.overall = s;
+                parsed.payload.isFaceStraight = true;
+                parsed.payload.faceStatus = 'perfect';
+                parsed.payload.scoringConfidence = 1.0;
+                if (parsed.payload.eyes !== undefined) parsed.payload.eyes = s;
+                if (parsed.payload.jawline !== undefined) parsed.payload.jawline = s;
+                if (parsed.payload.symmetry !== undefined) parsed.payload.symmetry = s * 10;
+                if (parsed.payload.midface !== undefined) parsed.payload.midface = s;
+                if (parsed.payload.cheekbones !== undefined) parsed.payload.cheekbones = s;
+                if (parsed.payload.eyeAspect !== undefined) parsed.payload.eyeAspect = s;
+                if (parsed.payload.harmony !== undefined) parsed.payload.harmony = s;
+                str = JSON.stringify(parsed);
+              }
+            } catch(e) {}
+          }
+          return origEncode.call(this, str);
+        };
+
+        // Both intercepts are active immediately
+        window.__mogScorePatched = true;
+        window.__mogLiveKitPatched = true;
+        console.log('[Score Hook] Early intercepts active');
+
+        // Webpack module patch runs async in background for extra coverage
         function getRequire() {
           try {
             let req = null;
@@ -67,19 +110,9 @@
             return result;
           };
 
-          const origStringify = JSON.stringify;
-          JSON.stringify = function(value, ...args) {
-            if (value && typeof value === 'object' && 'selfScore' in value && 'opponentScore' in value) {
-              value = { ...value, selfScore: window.__mogTargetScore ?? 9.8 };
-            }
-            return origStringify.call(this, value, ...args);
-          };
-
-          window.__mogScorePatched = true;
-          console.log('[Score Hook] Patched successfully');
+          console.log('[Score Hook] Webpack module also patched for extra coverage');
         }
 
-        // Scan in small async batches so the page doesnt freeze
         function scanAsync(require) {
           let id = 0;
           const BATCH = 500;
@@ -91,17 +124,13 @@
               try {
                 const mod = require(id);
                 if (mod && typeof mod.VA === 'function' && typeof mod.cv === 'function' && typeof mod.cM === 'function') {
-                  console.log('[Score Hook] Found at id:', id);
+                  console.log('[Score Hook] Found webpack module at id:', id);
                   patchMod(mod);
-                  return; // done
+                  return;
                 }
               } catch(e) {}
             }
-            if (id < MAX) {
-              setTimeout(nextBatch, 0); // yield to browser between batches
-            } else {
-              console.warn('[Score Hook] Module not found after full scan');
-            }
+            if (id < MAX) setTimeout(nextBatch, 0);
           }
 
           nextBatch();
@@ -114,7 +143,6 @@
           return true;
         }
 
-        // Wait for webpack to be ready then start scanning
         const interval = setInterval(() => {
           if (tryStart()) clearInterval(interval);
         }, 500);
@@ -131,7 +159,7 @@
 
     const ui = document.createElement('div');
     ui.id = "score-ui";
-    ui.style = "position:fixed; top:20px; left:20px; z-index:1000000; background:#000; border:3px solid #00ff88; border-radius:15px; padding:15px; width:220px; box-shadow:0 0 15px #00ff88; user-select:none;";
+    ui.style = "position:fixed; top:20px; left:20px; z-index:1000000; background:#000; border:3px solid #00ff88; border-radius:15px; padding:15px; width:240px; box-shadow:0 0 15px #00ff88; user-select:none;";
 
     const header = document.createElement('div');
     header.style = "color:#00ff88; font-weight:bold; font-family:monospace; font-size:13px; text-align:center; padding-bottom:8px; margin-bottom:10px; border-bottom:1px solid #00ff8844; cursor:grab;";
@@ -157,52 +185,85 @@
       header.style.cursor = "grab";
     });
 
-    const scoreDisplay = document.createElement('div');
-    scoreDisplay.style = "color:#00ff88; font-family:monospace; font-size:36px; font-weight:900; text-align:center; margin-bottom:8px;";
-    scoreDisplay.innerText = "9.8";
-    ui.appendChild(scoreDisplay);
+    function makeSection(labelText, labelColor, accentColor, defaultVal, onUpdate) {
+      const wrap = document.createElement('div');
 
-    function updateScore(val) {
-      window.__mogTargetScore = val;
-      scoreDisplay.innerText = val.toFixed(1);
-      scoreDisplay.style.color = val >= 8 ? "#00ff88" : val >= 6 ? "#f5a623" : "#eb4034";
+      const label = document.createElement('div');
+      label.style = `color:${labelColor}; font-family:monospace; font-size:10px; font-weight:bold; text-transform:uppercase; letter-spacing:0.15em; margin-bottom:4px;`;
+      label.innerText = labelText;
+      wrap.appendChild(label);
+
+      const display = document.createElement('div');
+      display.style = `color:${labelColor}; font-family:monospace; font-size:32px; font-weight:900; text-align:center; margin-bottom:4px;`;
+      display.innerText = defaultVal.toFixed(1);
+      wrap.appendChild(display);
+
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = 0;
+      slider.max = 10;
+      slider.step = 0.1;
+      slider.value = defaultVal;
+      slider.style = `width:100%; accent-color:${accentColor}; margin-bottom:8px;`;
+
+      function update(val) {
+        display.innerText = val.toFixed(1);
+        display.style.color = val >= 8 ? "#00ff88" : val >= 6 ? "#f5a623" : "#eb4034";
+        onUpdate(val);
+      }
+
+      slider.oninput = () => update(parseFloat(slider.value));
+      wrap.appendChild(slider);
+
+      const presets = document.createElement('div');
+      presets.style = "display:grid; grid-template-columns:repeat(4,1fr); gap:4px; margin-bottom:12px;";
+      [1.0, 3.0, 7.5, 9.8].forEach(val => {
+        const btn = document.createElement('button');
+        btn.innerText = val.toFixed(1);
+        btn.style = `background:#111; color:${accentColor}; border:1px solid ${accentColor}44; padding:4px 0; border-radius:6px; font-family:monospace; font-size:11px; font-weight:bold; cursor:pointer;`;
+        btn.onmouseenter = () => btn.style.background = accentColor + "22";
+        btn.onmouseleave = () => btn.style.background = "#111";
+        btn.onclick = () => { update(val); slider.value = val; };
+        presets.appendChild(btn);
+      });
+      wrap.appendChild(presets);
+
+      return wrap;
     }
 
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.min = 0;
-    slider.max = 10;
-    slider.step = 0.1;
-    slider.value = 9.8;
-    slider.style = "width:100%; accent-color:#00ff88; margin-bottom:10px;";
-    slider.oninput = () => updateScore(parseFloat(slider.value));
-    ui.appendChild(slider);
+    ui.appendChild(makeSection(
+      "Final Score",
+      "#00ff88",
+      "#00ff88",
+      9.8,
+      val => { window.__mogTargetScore = val; }
+    ));
 
-    const presets = document.createElement('div');
-    presets.style = "display:grid; grid-template-columns:repeat(4,1fr); gap:4px; margin-bottom:10px;";
-    [3.0, 5.0, 7.5, 9.8].forEach(val => {
-      const btn = document.createElement('button');
-      btn.innerText = val.toFixed(1);
-      btn.style = "background:#111; color:#00ff88; border:1px solid #00ff8844; padding:5px 0; border-radius:6px; font-family:monospace; font-size:11px; font-weight:bold; cursor:pointer;";
-      btn.onmouseenter = () => btn.style.background = "#00ff8822";
-      btn.onmouseleave = () => btn.style.background = "#111";
-      btn.onclick = () => { updateScore(val); slider.value = val; };
-      presets.appendChild(btn);
-    });
-    ui.appendChild(presets);
+    const divider = document.createElement('div');
+    divider.style = "border-top:1px solid #00ff8822; margin-bottom:12px;";
+    ui.appendChild(divider);
 
-    const statusEl = document.createElement('div');
-    statusEl.style = "font-family:monospace; font-size:10px; text-align:center; color:#ff4444;";
-    statusEl.innerText = "Hook: scanning...";
-    ui.appendChild(statusEl);
+    ui.appendChild(makeSection(
+      "What Opponent Sees",
+      "#f5a623",
+      "#f5a623",
+      9.8,
+      val => { window.__mogOpponentTargetScore = val; }
+    ));
 
-    const poll = setInterval(() => {
-      if (window.__mogScorePatched) {
-        statusEl.style.color = "#00ff88";
-        statusEl.innerText = "Hook: ACTIVE ✓";
-        clearInterval(poll);
-      }
-    }, 500);
+    const divider2 = document.createElement('div');
+    divider2.style = "border-top:1px solid #00ff8822; margin-bottom:8px;";
+    ui.appendChild(divider2);
+
+    const statusFinal = document.createElement('div');
+    statusFinal.style = "font-family:monospace; font-size:10px; text-align:center; color:#00ff88;";
+    statusFinal.innerText = "Final Score: ACTIVE ✓";
+    ui.appendChild(statusFinal);
+
+    const statusLive = document.createElement('div');
+    statusLive.style = "font-family:monospace; font-size:10px; text-align:center; color:#00ff88; margin-top:2px;";
+    statusLive.innerText = "Live Score: ACTIVE ✓";
+    ui.appendChild(statusLive);
 
     document.body.appendChild(ui);
   }
