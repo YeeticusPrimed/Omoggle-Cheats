@@ -25,13 +25,6 @@ The script injects into the page's JavaScript context and hooks into the webpack
 
 The hook scans webpack modules asynchronously in batches of 500 so the page stays responsive while it searches.
 
-## Notes
-
-- **Wait for ACTIVE ✓** before starting a match — if you join before the hook is ready the real score will be used
-- The score you set affects both what your opponent sees during the match and the final submitted score
-- Refresh the page if the hook takes more than 30 seconds to activate
-- The panel can be dragged anywhere on screen by clicking and holding the header
-
 ## Compatibility
 
 | Browser | Supported |
