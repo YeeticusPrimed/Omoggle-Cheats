@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Omoggle Set Score
 // @namespace    http://tampermonkey.net/
-// @version      4
+// @version      6
 // @description  Set your score!
 // @author       ConMan
 // @match        *://*.omoggle.com/*
@@ -18,12 +18,12 @@
       (function() {
         window.__mogTargetScore = 9.8;
         window.__mogOpponentTargetScore = 9.8;
+        window.__mogOpponentJitter = 0;
 
-        // Patch JSON.stringify early
+        // Patch JSON.stringify early for finalize payload
         const origStringify = JSON.stringify;
         JSON.stringify = function(value, ...args) {
           if (value && typeof value === 'object' && 'selfScore' in value && 'opponentScore' in value) {
-            console.log('[Score Hook] Intercepted finalize payload');
             value = { ...value, selfScore: window.__mogTargetScore ?? 9.8 };
           }
           return origStringify.call(this, value, ...args);
@@ -36,7 +36,10 @@
             try {
               const parsed = JSON.parse(str);
               if (parsed.type === 'SCAN_STATE' && parsed.payload) {
-                const s = window.__mogOpponentTargetScore ?? 9.8;
+                const base = window.__mogOpponentTargetScore ?? 9.8;
+                const jitter = window.__mogOpponentJitter ?? 0;
+                const noise = jitter > 0 ? (Math.random() * 2 - 1) * jitter : 0;
+                const s = Math.min(10, Math.max(0, base + noise));
                 parsed.payload.overall = s;
                 parsed.payload.isFaceStraight = true;
                 parsed.payload.faceStatus = 'perfect';
@@ -55,12 +58,10 @@
           return origEncode.call(this, str);
         };
 
-        // Both intercepts are active immediately
         window.__mogScorePatched = true;
         window.__mogLiveKitPatched = true;
         console.log('[Score Hook] Early intercepts active');
 
-        // Webpack module patch runs async in background for extra coverage
         function getRequire() {
           try {
             let req = null;
@@ -110,24 +111,63 @@
             return result;
           };
 
-          console.log('[Score Hook] Webpack module also patched for extra coverage');
+          console.log('[Score Hook] Webpack module patched');
+        }
+
+        function tryPatchStore(mod) {
+          try {
+            if (!mod || !mod.T) return false;
+            const store = mod.T;
+            if (typeof store.setState !== 'function') return false;
+            const state = store.getState();
+            if (!state || typeof state.myScore === 'undefined') return false;
+
+            const origSetState = store.setState;
+            store.setState = function(partial, replace, ...args) {
+              if (partial && typeof partial === 'object') {
+                if ('myScore' in partial) partial.myScore = window.__mogTargetScore ?? 9.8;
+                if ('myScoreRaw' in partial) partial.myScoreRaw = window.__mogTargetScore ?? 9.8;
+              }
+              if (typeof partial === 'function') {
+                const origFn = partial;
+                partial = function(state) {
+                  const result = origFn(state);
+                  if (result) {
+                    if ('myScore' in result) result.myScore = window.__mogTargetScore ?? 9.8;
+                    if ('myScoreRaw' in result) result.myScoreRaw = window.__mogTargetScore ?? 9.8;
+                  }
+                  return result;
+                };
+              }
+              return origSetState.call(this, partial, replace, ...args);
+            };
+
+            console.log('[Score Hook] Zustand store patched');
+            return true;
+          } catch(e) { return false; }
         }
 
         function scanAsync(require) {
           let id = 0;
           const BATCH = 500;
           const MAX = 200000;
+          let scoringFound = false;
+          let storeFound = false;
 
           function nextBatch() {
+            if (scoringFound && storeFound) return;
             const end = Math.min(id + BATCH, MAX);
             for (; id < end; id++) {
               try {
                 const mod = require(id);
-                if (mod && typeof mod.VA === 'function' && typeof mod.cv === 'function' && typeof mod.cM === 'function') {
-                  console.log('[Score Hook] Found webpack module at id:', id);
+                if (!scoringFound && mod && typeof mod.VA === 'function' && typeof mod.cv === 'function' && typeof mod.cM === 'function') {
                   patchMod(mod);
-                  return;
+                  scoringFound = true;
                 }
+                if (!storeFound && tryPatchStore(mod)) {
+                  storeFound = true;
+                }
+                if (scoringFound && storeFound) return;
               } catch(e) {}
             }
             if (id < MAX) setTimeout(nextBatch, 0);
@@ -146,6 +186,39 @@
         const interval = setInterval(() => {
           if (tryStart()) clearInterval(interval);
         }, 500);
+
+        // DOM override fallback
+        function startDOMOverride() {
+          const selector = 'span.font-mono.font-black.text-white.drop-shadow-md';
+          let locked = false;
+
+          const observer = new MutationObserver(() => {
+            if (!locked) return;
+            document.querySelectorAll(selector).forEach(span => {
+              const val = parseFloat(span.innerText);
+              if (!isNaN(val) && val >= 0 && val <= 10) {
+                const target = (window.__mogTargetScore ?? 9.8).toFixed(1);
+                if (span.innerText !== target) span.innerText = target;
+              }
+            });
+          });
+
+          observer.observe(document.body, {
+            subtree: true,
+            childList: true,
+            characterData: true
+          });
+
+          setInterval(() => {
+            locked = document.querySelectorAll(selector).length > 0;
+          }, 1000);
+        }
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', startDOMOverride);
+        } else {
+          startDOMOverride();
+        }
       })();
     `;
     (document.head || document.documentElement).appendChild(script);
@@ -231,8 +304,9 @@
       return wrap;
     }
 
+    // My Score section
     ui.appendChild(makeSection(
-      "Final Score",
+      "My Score",
       "#00ff88",
       "#00ff88",
       9.8,
@@ -243,6 +317,7 @@
     divider.style = "border-top:1px solid #00ff8822; margin-bottom:12px;";
     ui.appendChild(divider);
 
+    // Opponent section
     ui.appendChild(makeSection(
       "What Opponent Sees",
       "#f5a623",
@@ -250,6 +325,39 @@
       9.8,
       val => { window.__mogOpponentTargetScore = val; }
     ));
+
+    // Jitter slider under opponent section
+    const jitterWrap = document.createElement('div');
+    jitterWrap.style = "margin-top:-6px; margin-bottom:12px;";
+
+    const jitterLbl = document.createElement('div');
+    jitterLbl.style = "color:#f5a623; font-family:monospace; font-size:10px; display:flex; justify-content:space-between; margin-bottom:3px;";
+    jitterLbl.innerHTML = '<span>FLUCTUATION</span>';
+    const jitterVal = document.createElement('span');
+    jitterVal.innerText = '0.0';
+    jitterLbl.appendChild(jitterVal);
+    jitterWrap.appendChild(jitterLbl);
+
+    const jitterSlider = document.createElement('input');
+    jitterSlider.type = 'range';
+    jitterSlider.min = 0;
+    jitterSlider.max = 3;
+    jitterSlider.step = 0.1;
+    jitterSlider.value = 0;
+    jitterSlider.style = "width:100%; accent-color:#f5a623;";
+    jitterSlider.oninput = () => {
+      const v = parseFloat(jitterSlider.value);
+      window.__mogOpponentJitter = v;
+      jitterVal.innerText = v.toFixed(1);
+    };
+    jitterWrap.appendChild(jitterSlider);
+
+    const jitterHint = document.createElement('div');
+    jitterHint.style = "color:#ffffff33; font-family:monospace; font-size:9px; margin-top:3px;";
+    jitterHint.innerText = "±range added to each frame";
+    jitterWrap.appendChild(jitterHint);
+
+    ui.appendChild(jitterWrap);
 
     const divider2 = document.createElement('div');
     divider2.style = "border-top:1px solid #00ff8822; margin-bottom:8px;";
