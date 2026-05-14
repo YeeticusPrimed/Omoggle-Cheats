@@ -1,4 +1,4 @@
-# Omoggle Score Changer
+# Omoggle Cheats
 
 A Tampermonkey userscript that lets you set your own score on [Omoggle](https://omoggle.com).
 
